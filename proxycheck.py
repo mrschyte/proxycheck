@@ -42,17 +42,20 @@ class Worker(threading.Thread):
         while True:
             host, port = self.queue.get()
 
-            host = str(socket.gethostbyname(host))
-            port = int(port)
-            
-            result = self.evalproxy(host, port)
-            if result != None:
-                logging.info('< %15s:%-5d > has a latency of %8.2f ms (±%8.2f ms)' %(host, port, result[0], result[1]))
-                if not sys.stdout.isatty():
-                    print('%s,%d,%f,%f' %(host, port, result[0], result[1]))
-                    sys.stdout.flush()
-            else:
-                logging.info('< %15s:%-5d > is not responding' %(host, port))
+            try:
+                host = str(socket.gethostbyname(host))
+                port = int(port)
+
+                result = self.evalproxy(host, port)
+                if result != None:
+                    logging.info('< %15s:%-5d > has a latency of %8.2f ms (±%8.2f ms)' %(host, port, result[0], result[1]))
+                    if not sys.stdout.isatty():
+                        print('%s,%d,%f,%f' %(host, port, result[0], result[1]))
+                        sys.stdout.flush()
+                else:
+                    logging.info('< %15s:%-5d > is not responding' %(host, port))
+            except socket.gaierror:
+                logging.warning('unable to resolve host < %s >' %(host))
             self.queue.task_done()
 
 def slurp(path):
@@ -61,9 +64,13 @@ def slurp(path):
 
 def main(arguments):
     queue = Queue()
-    for line in slurp(arguments.proxy_list):
-        host, port = line.split(':')
-        queue.put((host, int(port)))
+
+    for idx, line in enumerate(slurp(arguments.proxy_list)):
+        try:
+            host, port = line.split(':')
+            queue.put((host, int(port)))
+        except ValueError as ex:
+            logging.warning('error parsing line %d (%s), ignoring.' %(idx, line))
 
     for k in range(arguments.threads):
         thread = Worker(queue, arguments.testurl, arguments.urlhash,
