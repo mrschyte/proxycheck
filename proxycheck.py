@@ -10,6 +10,12 @@ import timeit
 
 from queue import Queue
 
+class ProxyModifiesResponse(Exception):
+    pass
+
+class ProxyNotResponding(Exception):
+    pass
+
 class Worker(threading.Thread):
     def __init__(self, queue, testurl, urlhash, timeout, repeats):
         threading.Thread.__init__(self)
@@ -20,7 +26,7 @@ class Worker(threading.Thread):
         self.repeats = repeats
 
     def evalproxy(self, host, port):
-        def fetch():
+        def check():
             proxy = {'http': 'http://%s:%d' %(host, port)}
             proxy['https'] = proxy['http']
 
@@ -29,14 +35,14 @@ class Worker(threading.Thread):
                 response.raise_for_status()
                 return hashlib.md5(response.content).digest() == self.urlhash
             except Exception as ex:
-                return False
+                raise ProxyNotResponding()
 
-        if fetch():
-            samples = timeit.repeat(fetch, number=1, repeat=self.repeats)
+        if check():
+            samples = timeit.repeat(check, number=1, repeat=self.repeats)
             return (100.0 * statistics.mean(samples),
                     100.0 * statistics.stdev(samples))
         else:
-            return None
+            raise ProxyModifiesResponse()
 
     def run(self):
         while True:
@@ -47,13 +53,14 @@ class Worker(threading.Thread):
                 port = int(port)
 
                 result = self.evalproxy(host, port)
-                if result != None:
-                    logging.info('< %15s:%-5d > has a latency of %8.2f ms (±%8.2f ms)' %(host, port, result[0], result[1]))
-                    if not sys.stdout.isatty():
-                        print('%s,%d,%f,%f' %(host, port, result[0], result[1]))
-                        sys.stdout.flush()
-                else:
-                    logging.info('< %15s:%-5d > is not responding' %(host, port))
+                logging.info('< %15s:%-5d > has a latency of %8.2f ms (±%8.2f ms)' %(host, port, result[0], result[1]))
+                if not sys.stdout.isatty():
+                    print('%s,%d,%f,%f' %(host, port, result[0], result[1]))
+                    sys.stdout.flush()
+            except ProxyModifiesResponse:
+                logging.warning('< %15s:%-5d > is modifying response' %(host, port))
+            except ProxyNotResponding:
+                logging.info('< %15s:%-5d > is not responding' %(host, port))
             except socket.gaierror:
                 logging.warning('unable to resolve host < %s >' %(host))
             self.queue.task_done()
