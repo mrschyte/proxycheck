@@ -17,6 +17,8 @@ class ProxyNotResponding(Exception):
     pass
 
 class Worker(threading.Thread):
+    proxy_types = ['http', 'socks5']
+
     def __init__(self, queue, testurl, urlhash, timeout, repeats):
         threading.Thread.__init__(self)
         self.queue = queue
@@ -25,21 +27,38 @@ class Worker(threading.Thread):
         self.timeout = timeout
         self.repeats = repeats
 
-    def evalproxy(self, host, port):
-        def check():
-            proxy = {'http': 'http://%s:%d' %(host, port)}
-            proxy['https'] = proxy['http']
+    def make_proxy(self, proxy_type, host, port):
+        proxy = {'http': '%s://%s:%d' %(proxy_type, host, port)}
+        proxy['https'] = proxy['http']
+        return proxy
 
+    def identify(self, host, port):
+        for proxy_type in self.proxy_types:
+            proxy = self.make_proxy(proxy_type, host, port)
             try:
-                response = requests.get(self.testurl, proxies=proxy, timeout=self.timeout)
-                response.raise_for_status()
-                return hashlib.md5(response.content).digest() == self.urlhash
-            except Exception as ex:
-                raise ProxyNotResponding()
+                self.check(proxy)
+                return proxy_type
+            except ProxyNotResponding:
+                pass
+        raise ProxyNotResponding()
 
-        if check():
-            samples = timeit.repeat(check, number=1, repeat=self.repeats)
-            return (100.0 * statistics.mean(samples),
+    def check(self, proxy):
+        try:
+            response = requests.get(self.testurl, proxies=proxy, timeout=self.timeout)
+            response.raise_for_status()
+            return hashlib.md5(response.content).digest() == self.urlhash
+        except Exception as ex:
+            raise ProxyNotResponding()
+
+    def evalproxy(self, host, port):
+        proxy_type = self.identify(host, port)
+        proxy = self.make_proxy(proxy_type, host, port)
+
+        if self.check(proxy):
+            samples = timeit.repeat(lambda: self.check(proxy), number=1, repeat=self.repeats)
+
+            return (proxy_type,
+                    100.0 * statistics.mean(samples),
                     100.0 * statistics.stdev(samples))
         else:
             raise ProxyModifiesResponse()
@@ -53,9 +72,10 @@ class Worker(threading.Thread):
                 port = int(port)
 
                 result = self.evalproxy(host, port)
-                logging.info('< %15s:%-5d > has a latency of %8.2f ms (±%8.2f ms)' %(host, port, result[0], result[1]))
+                logging.info('< %15s:%-5d,%8s > has a latency of %8.2f ms (±%8.2f ms)' \
+                             %(host, port, result[0], result[1], result[2]))
                 if not sys.stdout.isatty():
-                    print('%s,%d,%f,%f' %(host, port, result[0], result[1]))
+                    print('%s,%d,%s,%f,%f' %(host, port, result[0], result[1], result[2]))
                     sys.stdout.flush()
             except ProxyModifiesResponse:
                 logging.warning('< %15s:%-5d > is modifying response' %(host, port))
@@ -113,7 +133,6 @@ if __name__ == '__main__':
     if sys.stdout.isatty():
         logging.info('stdout is a terminal, suppressing CSV output')
     else:
-        print('host,port,mean,stdev')
+        print('host,port,type,mean,stdev')
         sys.stdout.flush()
     main(arguments)
-
